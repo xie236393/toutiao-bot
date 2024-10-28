@@ -1,0 +1,4 @@
+PyQt5==5.15.11 
+playwright==1.42.0 
+loguru==0.7.2 
+openai==1.12.0 

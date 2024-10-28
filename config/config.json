@@ -1,0 +1,29 @@
+{
+  "app": {
+    "name": "头条助手",
+    "version": "1.0.0"
+  },
+  "ui": {
+    "window": {
+      "width": 1200,
+      "height": 800,
+      "title": "头条助手"
+    }
+  },
+  "api": {
+    "openai": {
+      "api_key": "",
+      "model": "gpt-3.5-turbo",
+      "temperature": 0.7,
+      "max_tokens": 2000
+    },
+    "toutiao": {
+      "cookie": ""
+    }
+  },
+  "paths": {
+    "temp": "data/temp",
+    "articles": "data/articles",
+    "cookies": "data/cookies"
+  }
+}
