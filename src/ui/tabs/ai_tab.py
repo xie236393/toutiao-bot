@@ -15,6 +15,30 @@ import json
 from pathlib import Path
 from datetime import datetime
 
+class LoginWorker(QThread):
+    """登录工作线程"""
+    finished = pyqtSignal(dict)
+    error = pyqtSignal(str)
+    
+    def __init__(self, username: str, password: str):
+        super().__init__()
+        self.username = username
+        self.password = password
+        self.account_api = AccountAPI()
+        
+    def run(self):
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            result = loop.run_until_complete(
+                self.account_api.login(self.username, self.password)
+            )
+            loop.close()
+            self.finished.emit(result)
+        except Exception as e:
+            logger.error(f"登录失败: {str(e)}")
+            self.error.emit(str(e))
+
 class AIWorker(QThread):
     """AI处理工作线程"""
     finished = pyqtSignal(str)
@@ -52,14 +76,15 @@ class ArticleLoadWorker(QThread):
     finished = pyqtSignal(dict)
     error = pyqtSignal(str)
     
-    def __init__(self, token: str, page: int = 1, page_size: int = 20):
+    def __init__(self, account_data: dict, page: int = 1, page_size: int = 20):
         super().__init__()
-        self.token = token
+        self.account_data = account_data
         self.page = page
         self.page_size = page_size
-        self.fetcher = ArticleFetcher(token)
+        self.fetcher = ArticleFetcher(account_data)
         
     def run(self):
+        """加载文章列表"""
         try:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
@@ -100,38 +125,34 @@ class PublishWorker(QThread):
             logger.error(f"发布失败: {str(e)}")
             self.error.emit(str(e))
 
-class AccountVerifyWorker(QThread):
-    """账号验证工作线程"""
-    finished = pyqtSignal(bool)
-    error = pyqtSignal(str)
-    
-    def __init__(self, account_data: dict):
-        super().__init__()
-        self.account_data = account_data
-        self.account_api = AccountAPI()
+class LoginDialog(QDialog):
+    """登录对话框"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("登录头条号")
+        self.setMinimumWidth(300)
         
-    def run(self):
-        try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            result = loop.run_until_complete(
-                self.account_api.verify_token(self.account_data.get("token", ""))
-            )
-            loop.close()
-            
-            if result["valid"]:
-                self.account_data.update({
-                    "name": result.get("name", "未知用户"),
-                    "status": result.get("status", "已登录"),
-                    "valid": True
-                })
-                self.finished.emit(True)
-            else:
-                self.error.emit(result.get("error", "验证失败"))
-                
-        except Exception as e:
-            logger.error(f"验证失败: {str(e)}")
-            self.error.emit(str(e))
+        layout = QFormLayout()
+        
+        # 用户名输入
+        self.username_input = QLineEdit()
+        layout.addRow("用户名:", self.username_input)
+        
+        # 密码输入
+        self.password_input = QLineEdit()
+        self.password_input.setEchoMode(QLineEdit.Password)
+        layout.addRow("密码:", self.password_input)
+        
+        # 按钮
+        btn_box = QDialogButtonBox(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel
+        )
+        btn_box.accepted.connect(self.accept)
+        btn_box.rejected.connect(self.reject)
+        layout.addRow(btn_box)
+        
+        self.setLayout(layout)
+
 class AITab(QWidget):
     def __init__(self):
         super().__init__()
@@ -276,31 +297,52 @@ class AITab(QWidget):
         layout.addLayout(page_layout)
         
         self.setLayout(layout)
+
     def load_current_account(self):
         """加载当前账号"""
         try:
-            # 测试数据
-            self.current_account = {
-                "token": "test_token",
-                "name": "测试账号",
-                "status": "已登录",
-                "valid": True
-            }
-            self.update_account_label()
+            # 尝试加载上次登录的账号
+            self.current_account = self.account_api.load_last_account()
             
-            # 启用相关按钮
-            if hasattr(self, 'refresh_btn'):
+            if not self.current_account:
+                # 如果没有已登录账号，显示登录对话框
+                dialog = LoginDialog(self)
+                if dialog.exec_() == QDialog.Accepted:
+                    username = dialog.username_input.text().strip()
+                    password = dialog.password_input.text()
+                    
+                    # 创建登录线程
+                    self.login_worker = LoginWorker(username, password)
+                    self.login_worker.finished.connect(self.handle_login_success)
+                    self.login_worker.error.connect(self.handle_login_error)
+                    self.login_worker.start()
+                else:
+                    self.update_account_label()  # 更新为未登录状态
+            else:
+                self.update_account_label()
                 self.refresh_btn.setEnabled(True)
-            if hasattr(self, 'publish_btn'):
                 self.publish_btn.setEnabled(True)
                 
         except Exception as e:
             logger.error(f"加载当前账号失败: {str(e)}")
             self.current_account = None
-            if hasattr(self, 'account_label'):
-                self.update_account_label()
+            self.update_account_label()
             QMessageBox.warning(self, "错误", f"加载账号失败：{str(e)}")
             
+    def handle_login_success(self, account_data: dict):
+        """登录成功处理"""
+        self.current_account = account_data
+        self.update_account_label()
+        self.refresh_btn.setEnabled(True)
+        self.publish_btn.setEnabled(True)
+        self.load_articles()
+        
+    def handle_login_error(self, error: str):
+        """登录失败处理"""
+        QMessageBox.critical(self, "登录失败", error)
+        self.current_account = None
+        self.update_account_label()
+        
     def update_account_label(self):
         """更新账号显示"""
         try:
@@ -323,7 +365,6 @@ class AITab(QWidget):
             logger.error(f"更新账号显示失败: {str(e)}")
             self.account_label.setText("当前账号：更新失败")
             self.account_label.setStyleSheet("color: red; font-size: 14px; font-weight: bold;")
-            
     def process_text(self):
         """处理文本"""
         try:
@@ -367,24 +408,22 @@ class AITab(QWidget):
         self.process_btn.setEnabled(True)
         self.progress_bar.setVisible(False)
         
-    def load_articles(self):
+            def load_articles(self):
         """加载文章列表"""
         try:
             if not self.current_account:
                 logger.warning("未选择账号，无法加载文章列表")
                 return
                 
-            # 获取token
-            token = self.current_account.get("token")
-            if not token:
-                logger.error("当前账号token为空")
-                raise Exception("当前账号token无效")
-                
             # 清空表格
             self.article_table.setRowCount(0)
             
             # 创建加载线程
-            self.load_worker = ArticleLoadWorker(token, self.current_page, self.page_size)
+            self.load_worker = ArticleLoadWorker(
+                self.current_account,
+                self.current_page,
+                self.page_size
+            )
             self.load_worker.finished.connect(self.handle_articles_loaded)
             self.load_worker.error.connect(self.handle_load_error)
             self.load_worker.start()
@@ -397,6 +436,7 @@ class AITab(QWidget):
         except Exception as e:
             logger.error(f"加载文章列表失败: {str(e)}")
             QMessageBox.warning(self, "警告", f"加载文章列表失败：{str(e)}")
+            
     def handle_articles_loaded(self, result: dict):
         """处理加载的文章列表"""
         try:
@@ -553,60 +593,4 @@ class AITab(QWidget):
         """发布错误"""
         self.progress_bar.setVisible(False)
         self.publish_btn.setEnabled(True)
-        QMessageBox.critical(self, "错误", f"发布失败：{error}")
-
-class PublishDialog(QDialog):
-    """发布文章对话框"""
-    def __init__(self, content: str, parent=None):
-        super().__init__(parent)
-        self.content = content
-        self.init_ui()
-        
-    def init_ui(self):
-        self.setWindowTitle("发布文章")
-        self.setMinimumWidth(500)
-        
-        layout = QFormLayout()
-        
-        # 标题输入
-        self.title_input = QLineEdit()
-        layout.addRow("文章标题:", self.title_input)
-        
-        # 分类选择
-        self.category_combo = QComboBox()
-        self.category_combo.addItems([
-            '科技', '数码', '互联网', '编程开发', 
-            '人工智能', '职场', '创业', '其他'
-        ])
-        layout.addRow("文章分类:", self.category_combo)
-        
-        # 标签输入
-        self.tags_input = QLineEdit()
-        self.tags_input.setPlaceholderText("多个标签用逗号分隔")
-        layout.addRow("文章标签:", self.tags_input)
-        
-        # 内容预览
-        content_preview = QTextEdit()
-        content_preview.setPlainText(self.content)
-        content_preview.setReadOnly(True)
-        content_preview.setMaximumHeight(200)
-        layout.addRow("内容预览:", content_preview)
-        
-        # 按钮
-        btn_box = QDialogButtonBox(
-            QDialogButtonBox.Ok | QDialogButtonBox.Cancel
-        )
-        btn_box.accepted.connect(self.accept)
-        btn_box.rejected.connect(self.reject)
-        layout.addRow(btn_box)
-        
-        self.setLayout(layout)
-        
-    def get_article_data(self) -> dict:
-        """获取文章数据"""
-        return {
-            'title': self.title_input.text().strip(),
-            'category': self.category_combo.currentText(),
-            'tags': [tag.strip() for tag in self.tags_input.text().split(',') if tag.strip()],
-            'content': self.content
-        }            
+        QMessageBox.critical(self, "错误", f"发布失败：{error}")            
